@@ -5,10 +5,44 @@ import vtk.util.numpy_support as vtk_np
 import argparse
 import sys
 from math import floor
+import geopandas as gpd
+import random
 
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QComboBox, QGridLayout, QLabel, QPushButton
 from PyQt6.QtCore import Qt
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+
+class VTKActorWrapper(object):
+    def __init__(self, nparray, colors=None):
+        super(VTKActorWrapper, self).__init__()
+
+        self.nparray = nparray
+
+        nCoords = nparray.shape[0]
+        nElem = nparray.shape[1]
+
+        self.verts = vtk.vtkPoints()
+        self.cells = vtk.vtkCellArray()
+        self.scalars = None
+
+        self.pd = vtk.vtkPolyData()
+        self.verts.SetData(vtk_np.numpy_to_vtk(nparray))
+        self.cells_npy = np.vstack([np.ones(nCoords,dtype=np.int64),
+                               np.arange(nCoords,dtype=np.int64)]).T.flatten()
+        self.cells.SetCells(nCoords,vtk_np.numpy_to_vtkIdTypeArray(self.cells_npy))
+        self.pd.SetPoints(self.verts)
+        self.pd.SetVerts(self.cells)
+        if colors is not None:
+            self.pd.GetPointData().SetScalars(vtk_np.numpy_to_vtk(colors))
+
+        self.mapper = vtk.vtkPolyDataMapper()
+        self.mapper.SetInputDataObject(self.pd)
+        if colors is not None:
+            self.mapper.SetColorModeToDirectScalars()
+
+        self.actor = vtk.vtkActor()
+        self.actor.SetMapper(self.mapper)
+        self.actor.GetProperty().SetRepresentationToPoints()
 
 frame_counter = 0
 
@@ -27,6 +61,9 @@ def save_frame(window):
     png_writer.Write()
     frame_counter += 1
     print(file_name + " has been successfully exported")
+
+def categorical_arrays(shapefile, header):
+    return shapefile.groupby(header)['pts'].agg(lambda x: np.concatenate(x.values, axis=0)).to_dict()
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -50,8 +87,8 @@ class Ui_MainWindow(object):
 
         self.attributeLabel = QLabel('Attribute that is Visualized:')
         self.attributeDropdown = QComboBox()
-        attributes = ['None', 'Type of Wall/Structure', 'Height of Existing Wall', 'Height of Original Wall', 'Completeness', 'Width']
-        self.attributeDropdown.addItems(attributes)
+        self.attributes = ['None', 'Type of Wall', 'Completeness']
+        self.attributeDropdown.addItems(self.attributes)
 
         self.positionLabel = QLabel('Current (X,Y,Z) position: (0,0,0)')
         self.positionLabel.setAlignment(Qt.AlignmentFlag.AlignHCenter)
@@ -77,45 +114,84 @@ class FinalProject(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
+        self.attributes = self.ui.attributes
+
         # for use later
         self.currAttribute = 'None'
+        self.attributeDict = {'None': 'None', 'Type of Wall': 'clase_rev', 'Completeness': 'preserva_1'}
+
+        self.shapefile = gpd.read_file(args.shapefile)
 
         self.pc = laspy.read(args.input)
         self.pc_array = np.vstack([self.pc.x, self.pc.y, self.pc.z]).transpose()
-        # self.pc_array = self.pc_array[::100] # Randomly reducing the points by a factor of 100
+        self.pc_array = self.pc_array[::100] # Randomly reducing the points by a factor of 100
         # print(self.pc_array.shape)
         # print(self.pc_array[0])
+
+        self.colors = np.vstack([self.pc.red/2**16, self.pc.green/2**16, self.pc.blue/2**16]).transpose()
 
         self.nCoords = self.pc_array.shape[0]
         self.nElem = self.pc_array.shape[1]
 
-        self.verts = vtk.vtkPoints()
-        self.cells = vtk.vtkCellArray()
-        self.scalars = None
+        # presort points into each wall component, so we do not have to do it everytime we change category
+        self.pts = []
+        for i, pg in enumerate(self.shapefile['geometry'].apply(lambda x: x.bounds[:])):
+            mask = (self.pc_array[:,0]>pg[0]) * (self.pc_array[:,0]<pg[2]) * (self.pc_array[:,1]>pg[1]) * (self.pc_array[:,1]<pg[3])
+            x = self.pc_array[mask]
+            if len(x):
+                self.pts.append(x)
+            else:
+                self.shapefile.drop(i, inplace=True) # removes walls that have no points in them (so there's no reason to deal with them)
 
-        self.pd = vtk.vtkPolyData()
-
-        self.verts.SetData(vtk_np.numpy_to_vtk(self.pc_array))
-
-        self.cells_npy = np.vstack([np.ones(self.nCoords,dtype=np.int64),
-                        np.arange(self.nCoords,dtype=np.int64)]).T.flatten()
-        # print(self.cells_npy.shape)
-
-        self.cells.SetCells(self.nCoords,vtk_np.numpy_to_vtkIdTypeArray(self.cells_npy))
-
-        self.pd.SetPoints(self.verts)
-        self.pd.SetVerts(self.cells)
-
-        self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputDataObject(self.pd)
-
-        self.actor = vtk.vtkActor()
-        self.actor.SetMapper(self.mapper)
-        self.actor.GetProperty().SetRepresentationToPoints()
-        self.actor.GetProperty().SetColor(0.0,1.0,0.0)
+        self.shapefile['pts'] = self.pts
 
         self.ren = vtk.vtkRenderer()
-        self.ren.AddActor(self.actor)
+
+        self.allPoints = VTKActorWrapper(self.pc_array, self.colors)
+        self.ren.AddActor(self.allPoints.actor)
+
+        # dict of lists containing the actors needed for each attribute
+        self.attributeActorDict = dict()
+
+        # create the actors for each attribute; we can then turn their visbility on and off
+        for attribute in self.attributes:
+            if attribute != 'None':
+                print(attribute)
+                self.masterList = categorical_arrays(self.shapefile, self.attributeDict[attribute])
+                
+                self.attributeActorDict[attribute] = []
+
+                self.legendSquare = vtk.vtkCubeSource()
+                self.legendSquare.Update()
+                self.legend = vtk.vtkLegendBoxActor()
+                self.legend.SetNumberOfEntries(len(self.masterList))
+                i = 0
+                for c, arr in self.masterList.items():
+                    r = random.random()
+                    g = random.random()
+                    b = random.random()
+                    actorTemp = VTKActorWrapper(arr)
+                    actorTemp.actor.GetProperty().SetColor(r, g, b)
+                    
+                    self.ren.AddActor(actorTemp.actor)
+                    self.attributeActorDict[attribute].append(actorTemp.actor)
+
+                    self.legend.SetEntry(i, self.legendSquare.GetOutput(), c, (r, g, b))
+                    i += 1
+
+                self.legend.GetPositionCoordinate().SetCoordinateSystemToView()
+                self.legend.GetPositionCoordinate().SetValue(0.5, -1.0)
+                self.legend.GetPosition2Coordinate().SetCoordinateSystemToView()
+                self.legend.GetPosition2Coordinate().SetValue(1, -0.5)
+                self.legend.UseBackgroundOn()
+                self.legend.SetBackgroundColor(1, 1, 1)
+
+                self.ren.AddActor(self.legend)
+
+                self.attributeActorDict[attribute].append(self.legend)
+
+                for actor in self.attributeActorDict[attribute]:
+                    actor.VisibilityOff()
 
         self.ui.vtkWidget.GetRenderWindow().AddRenderer(self.ren)
         self.iren = self.ui.vtkWidget.GetRenderWindow().GetInteractor()
@@ -127,6 +203,13 @@ class FinalProject(QMainWindow):
         sys.exit()
     
     def attributeCallback(self, val):
+        if self.currAttribute != 'None': # turn off old actors if needed
+            for actor in self.attributeActorDict[self.currAttribute]:
+                actor.VisibilityOff()
+        if val != 'None': # turn on new actors if needed
+             for actor in self.attributeActorDict[val]:
+                actor.VisibilityOn()
+
         self.currAttribute = val
         self.ui.vtkWidget.GetRenderWindow().Render()
 
@@ -140,6 +223,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='CS53000 Final Project')
     parser.add_argument('-i', '--input', required=True, type=str, help='Path of the LiDAR point cloud dataset')
+    parser.add_argument('-s', '--shapefile', required=True, type=str, help='Path of the Walls Shapefile')
 
     args = parser.parse_args()
 
