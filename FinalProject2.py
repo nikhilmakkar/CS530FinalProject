@@ -43,41 +43,57 @@ pc_array = np.vstack([pc.x, pc.y, pc.z]).transpose()
 pc_array = pc_array[::100] # Randomly reducing the points 
                         #  by a factor of 100
 
-def filtered_array(shapefile, pc_array, wall_class = 'Delimitacion de manzana'):
-    num = 0
-    polygons = []
-    for idx, rows in shapefile.iterrows():     
-        if rows['clase_rev']== wall_class:
-            num = num+1
-            polygons.append(rows['geometry'].bounds[:]) # Bounds = (minx, miny, maxx, maxy)
+# presort points into each wall component, so we do not have to do it everytime we change category
+pts = []
+for i, pg in enumerate(shapefile['geometry'].apply(lambda x: x.bounds[:])):
+    mask = (pc_array[:,0]>pg[0]) * (pc_array[:,0]<pg[2]) * (pc_array[:,1]>pg[1]) * (pc_array[:,1]<pg[3])
+    x = pc_array[mask]
+    if len(x):
+        pts.append(x)
+    else:
+        shapefile.drop(i, inplace=True) # removes walls that have no points in them (so there's no reason to deal with them)
+
+shapefile['pts'] = pts
+
+
+# def filtered_array(shapefile, pc_array, wall_class = 'Delimitacion de manzana'):
+#     num = 0
+#     polygons = []
+#     for idx, rows in shapefile.iterrows():     
+#         if rows['clase_rev']== wall_class:
+#             num = num+1
+#             polygons.append(rows['geometry'].bounds[:]) # Bounds = (minx, miny, maxx, maxy)
     
-    print('Number of walls: ',num)
-    polygons = np.asarray(polygons)
-    points = []
-    for i in range(polygons.shape[0]):
-        mask = (pc_array[:,0]>polygons[i,0])*(pc_array[:,0]<polygons[i,2])*(pc_array[:,1]>polygons[i,1])*(pc_array[:,1]<polygons[i,3])
-        points.append(pc_array[mask])
+#     print('Number of walls: ',num)
+#     polygons = np.asarray(polygons)
+#     points = []
+#     for i in range(polygons.shape[0]):
+#         mask = (pc_array[:,0]>polygons[i,0])*(pc_array[:,0]<polygons[i,2])*(pc_array[:,1]>polygons[i,1])*(pc_array[:,1]<polygons[i,3])
+#         points.append(pc_array[mask])
 
-    print(len(points))
-    points_arr = np.concatenate(points, axis=0)
-    print(points_arr.shape)
-    return points_arr
+#     print(len(points))
+#     points_arr = np.concatenate(points, axis=0)
+#     print(points_arr.shape)
+#     return points_arr
 
-def categorical_arrays(shapefile, pc_array, header):
-    classes = shapefile[header].dropna().unique()
+# def categorical_arrays(shapefile, pc_array, header):
+#     classes = shapefile[header].dropna().unique()
 
-    df = shapefile.groupby(header)['geometry'].apply(lambda x: x.bounds[:]).T
-    polygons = {c: df[c].T.to_numpy() for c in classes}
-    masterDict = {}
-    for c in classes:
-        pointList = []
-        for pg in polygons[c]:
-            mask = (pc_array[:,0]>pg[0]) * (pc_array[:,0]<pg[2]) * (pc_array[:,1]>pg[1]) * (pc_array[:,1]<pg[3])
-            pointList.append(pc_array[mask])
-        points_arr = np.concatenate(pointList, axis=0)
-        masterDict[c] = points_arr
+#     df = shapefile.groupby(header)['geometry'].apply(lambda x: x.bounds[:]).T
+#     polygons = {c: df[c].T.to_numpy() for c in classes}
+#     masterDict = {}
+#     for c in classes:
+#         pointList = []
+#         for pg in polygons[c]:
+#             mask = (pc_array[:,0]>pg[0]) * (pc_array[:,0]<pg[2]) * (pc_array[:,1]>pg[1]) * (pc_array[:,1]<pg[3])
+#             pointList.append(pc_array[mask])
+#         points_arr = np.concatenate(pointList, axis=0)
+#         masterDict[c] = points_arr
 
-    return masterDict
+#     return masterDict
+
+def categorical_arrays(shapefile, header):
+    return shapefile.groupby(header)['pts'].agg(lambda x: np.concatenate(x.values, axis=0)).to_dict()
 
 
 '''
@@ -163,7 +179,7 @@ def categorical_arrays(shapefile, pc_array, header):
 
 ren = vtk.vtkRenderer()
 
-masterList = categorical_arrays(shapefile, pc_array, 'clase_rev')
+masterList = categorical_arrays(shapefile, 'clase_rev')
 
 actor1 = VTKActorWrapper(pc_array)
 actor1 = actor1.actor
