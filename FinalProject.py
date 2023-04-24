@@ -55,4 +55,3 @@ interactor.Initialize()
 
 window.Render()
 interactor.Start()
-
