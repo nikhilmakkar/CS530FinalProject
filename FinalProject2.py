@@ -3,6 +3,7 @@ import numpy as np
 import laspy
 import vtk.util.numpy_support as vtk_np
 import geopandas as gpd
+import random
 
 class VTKActorWrapper(object):
     def __init__(self, nparray):
@@ -31,12 +32,11 @@ class VTKActorWrapper(object):
         self.actor = vtk.vtkActor()
         self.actor.SetMapper(self.mapper)
         self.actor.GetProperty().SetRepresentationToPoints()
-        # self.actor.GetProperty().SetColor(0.0,1.0,0.0)
 
 
-shapefile = gpd.read_file(r'.\Latest_versions_2023_03_28\Mawchu_Llacta_walls_2023_03_28_UTM.shp')
+shapefile = gpd.read_file(r'C:/Users/tanne/Desktop/VisualizationFinalProjectData/Latest_versions_2023_03_28/Mawchu_Llacta_walls_2023_03_28_UTM.shp')
 
-pc = laspy.read('Mawchu_LLacta_UTM.las')
+pc = laspy.read('C:/Users/tanne/Desktop/VisualizationFinalProjectData/Mawchu_LLacta_UTM.las')
 
 
 pc_array = np.vstack([pc.x, pc.y, pc.z]).transpose()
@@ -58,9 +58,26 @@ def filtered_array(shapefile, pc_array, wall_class = 'Delimitacion de manzana'):
         mask = (pc_array[:,0]>polygons[i,0])*(pc_array[:,0]<polygons[i,2])*(pc_array[:,1]>polygons[i,1])*(pc_array[:,1]<polygons[i,3])
         points.append(pc_array[mask])
 
+    print(len(points))
     points_arr = np.concatenate(points, axis=0)
-    # print(points_arr.shape)
+    print(points_arr.shape)
     return points_arr
+
+def categorical_arrays(shapefile, pc_array, header):
+    classes = shapefile[header].dropna().unique()
+
+    df = shapefile.groupby(header)['geometry'].apply(lambda x: x.bounds[:]).T
+    polygons = {c: df[c].T.to_numpy() for c in classes}
+    masterDict = {}
+    for c in classes:
+        pointList = []
+        for pg in polygons[c]:
+            mask = (pc_array[:,0]>pg[0]) * (pc_array[:,0]<pg[2]) * (pc_array[:,1]>pg[1]) * (pc_array[:,1]<pg[3])
+            pointList.append(pc_array[mask])
+        points_arr = np.concatenate(pointList, axis=0)
+        masterDict[c] = points_arr
+
+    return masterDict
 
 
 '''
@@ -139,17 +156,47 @@ def filtered_array(shapefile, pc_array, wall_class = 'Delimitacion de manzana'):
 # print(array.shape)
 # new_array = array
 '''
-points_array = filtered_array(shapefile=shapefile, pc_array=pc_array, wall_class='Division de grupo patio')
-new_actor = VTKActorWrapper(points_array)
-new_actor = new_actor.actor
-new_actor.GetProperty().SetColor(1.0,0.0,0.0)
+# points_array = filtered_array(shapefile=shapefile, pc_array=pc_array, wall_class='Division de grupo patio')
+# new_actor = VTKActorWrapper(points_array)
+# new_actor = new_actor.actor
+# new_actor.GetProperty().SetColor(1.0,0.0,0.0)
+
+ren = vtk.vtkRenderer()
+
+masterList = categorical_arrays(shapefile, pc_array, 'clase_rev')
 
 actor1 = VTKActorWrapper(pc_array)
 actor1 = actor1.actor
-
-ren = vtk.vtkRenderer()
 ren.AddActor(actor1)
-ren.AddActor(new_actor)
+
+
+legendSquare = vtk.vtkCubeSource()
+legendSquare.Update()
+legend = vtk.vtkLegendBoxActor()
+legend.SetNumberOfEntries(len(masterList))
+i = 0
+for c, arr in masterList.items():
+    r = random.random()
+    g = random.random()
+    b = random.random()
+    actorTemp = VTKActorWrapper(arr)
+    actorTemp.actor.GetProperty().SetColor(r, g, b)
+    
+    ren.AddActor(actorTemp.actor)
+
+    legend.SetEntry(i, legendSquare.GetOutput(), c, (r, g, b))
+    i += 1
+
+legend.GetPositionCoordinate().SetCoordinateSystemToView()
+legend.GetPositionCoordinate().SetValue(0.5, -1.0)
+legend.GetPosition2Coordinate().SetCoordinateSystemToView()
+legend.GetPosition2Coordinate().SetValue(1, -0.5)
+legend.UseBackgroundOn()
+legend.SetBackgroundColor(1, 1, 1)
+
+
+ren.AddActor(legend)
+
 
 window = vtk.vtkRenderWindow()
 window.AddRenderer(ren)
@@ -161,4 +208,3 @@ interactor.Initialize()
 
 window.Render()
 interactor.Start()
-
