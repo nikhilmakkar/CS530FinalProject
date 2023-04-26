@@ -9,6 +9,7 @@ import geopandas as gpd
 import concurrent.futures
 import matplotlib.path as mpltPath
 from vtk_colorbar import colorbar, colorbar_param
+import pickle
 
 
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QComboBox, QGridLayout, QLabel, QPushButton
@@ -159,7 +160,7 @@ class FinalProject(QMainWindow):
 
         self.pc = laspy.read(args.input)
         self.pc_array = np.vstack([self.pc.x, self.pc.y, self.pc.z]).transpose()
-        if not args.full:
+        if not args.all:
             self.pc_array = self.pc_array[::100] # Randomly reducing the points by a factor of 100
 
         self.colors = np.vstack([self.pc.red/2**16, self.pc.green/2**16, self.pc.blue/2**16]).transpose()
@@ -168,7 +169,10 @@ class FinalProject(QMainWindow):
         self.nElem = self.pc_array.shape[1]
 
         # presort points into each wall component, so we do not have to do it everytime we change category
-        if args.boundaries:
+        if args.file:
+            with open(args.file, 'rb') as fp:
+                pts = pickle.load(fp)
+        elif args.boundaries:
             pts = realBoundary(self.shapefile, self.pc_array)
         else:
             pts = boundingBox(self.shapefile, self.pc_array)
@@ -286,7 +290,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CS53000 Final Project')
     parser.add_argument('-i', '--input', required=True, type=str, help='Path of the LiDAR point cloud dataset')
     parser.add_argument('-s', '--shapefile', required=True, type=str, help='Path of the Walls Shapefile')
-    parser.add_argument('-f', '--full', action='store_true', help='Use all points instead of reducing')
+    parser.add_argument('-f', '--file', required=False, type=str, help='Path to preprocessed points pkl file')
+    parser.add_argument('-a', '--all', action='store_true', help='Use all points instead of reducing')
     parser.add_argument('-b', '--boundaries', action='store_true', help='Use actual wall boundaries instead of bounding boxes')
 
     args = parser.parse_args()
