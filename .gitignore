@@ -1,2 +1,5 @@
 # Tanner
 testing.ipynb
+__pycache__/functions.cpython-311.pyc
+.gitignore
+functions.py

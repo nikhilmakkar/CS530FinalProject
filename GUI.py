@@ -7,6 +7,9 @@ import sys
 from math import floor
 import geopandas as gpd
 import random
+import concurrent.futures
+import matplotlib.path as mpltPath
+
 
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QComboBox, QGridLayout, QLabel, QPushButton
 from PyQt6.QtCore import Qt
@@ -64,6 +67,31 @@ def save_frame(window):
 
 def categorical_arrays(shapefile, header):
     return shapefile.groupby(header)['pts'].agg(lambda x: np.concatenate(x.values, axis=0)).to_dict()
+
+def parallelFunction(args):
+    pg, pc_array = args
+    if pg.geom_type == 'Polygon':
+        coords = pg.exterior.coords
+        # print(coords)
+    elif pg.geom_type == 'MultiPolygon':
+        coords = np.concatenate([poly.exterior.coords for poly in pg.geoms])
+
+    path = mpltPath.Path(coords)
+    mask = path.contains_points(pc_array[:,0:2])
+    x = pc_array[mask]
+    return x
+
+def realBoundary(shapefile, pc_array):
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        pts = [i for i in executor.map(parallelFunction, [[pg, pc_array] for pg in shapefile['geometry']])]
+    return pts
+
+def boundingBox(shapefile, pc_array):
+    pts = []
+    for pg in shapefile['geometry'].apply(lambda x: x.bounds[:]):
+        mask = (pc_array[:,0]>pg[0]) * (pc_array[:,0]<pg[2]) * (pc_array[:,1]>pg[1]) * (pc_array[:,1]<pg[3])
+        pts.append(pc_array[mask])
+    return pts
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -124,9 +152,8 @@ class FinalProject(QMainWindow):
 
         self.pc = laspy.read(args.input)
         self.pc_array = np.vstack([self.pc.x, self.pc.y, self.pc.z]).transpose()
-        self.pc_array = self.pc_array[::100] # Randomly reducing the points by a factor of 100
-        # print(self.pc_array.shape)
-        # print(self.pc_array[0])
+        if not args.full:
+            self.pc_array = self.pc_array[::100] # Randomly reducing the points by a factor of 100
 
         self.colors = np.vstack([self.pc.red/2**16, self.pc.green/2**16, self.pc.blue/2**16]).transpose()
 
@@ -134,16 +161,18 @@ class FinalProject(QMainWindow):
         self.nElem = self.pc_array.shape[1]
 
         # presort points into each wall component, so we do not have to do it everytime we change category
-        self.pts = []
-        for i, pg in enumerate(self.shapefile['geometry'].apply(lambda x: x.bounds[:])):
-            mask = (self.pc_array[:,0]>pg[0]) * (self.pc_array[:,0]<pg[2]) * (self.pc_array[:,1]>pg[1]) * (self.pc_array[:,1]<pg[3])
-            x = self.pc_array[mask]
-            if len(x):
-                self.pts.append(x)
-            else:
-                self.shapefile.drop(i, inplace=True) # removes walls that have no points in them (so there's no reason to deal with them)
+        if args.boundaries:
+            pts = realBoundary(self.shapefile, self.pc_array)
+        else:
+            pts = boundingBox(self.shapefile, self.pc_array)
 
-        self.shapefile['pts'] = self.pts
+        mask = sorted((i for i, pt in enumerate(pts) if len(pt) == 0), reverse=True)
+        for i in mask:
+            del pts[i]
+            self.shapefile.drop(i, inplace=True)
+        
+
+        self.shapefile['pts'] = pts
 
         self.ren = vtk.vtkRenderer()
 
@@ -224,6 +253,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CS53000 Final Project')
     parser.add_argument('-i', '--input', required=True, type=str, help='Path of the LiDAR point cloud dataset')
     parser.add_argument('-s', '--shapefile', required=True, type=str, help='Path of the Walls Shapefile')
+    parser.add_argument('-f', '--full', action='store_true', help='Use all points instead of reducing')
+    parser.add_argument('-b', '--boundaries', action='store_true', help='Use actual wall boundaries instead of bounding boxes')
 
     args = parser.parse_args()
 
