@@ -6,9 +6,9 @@ import argparse
 import sys
 from math import floor
 import geopandas as gpd
-import random
 import concurrent.futures
 import matplotlib.path as mpltPath
+from vtk_colorbar import colorbar, colorbar_param
 
 
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QComboBox, QGridLayout, QLabel, QPushButton
@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
 class VTKActorWrapper(object):
-    def __init__(self, nparray, colors=None):
+    def __init__(self, nparray, colors=None, values=None):
         super(VTKActorWrapper, self).__init__()
 
         self.nparray = nparray
@@ -37,6 +37,8 @@ class VTKActorWrapper(object):
         self.pd.SetVerts(self.cells)
         if colors is not None:
             self.pd.GetPointData().SetScalars(vtk_np.numpy_to_vtk(colors))
+        elif values is not None:
+            self.pd.GetPointData().SetScalars(vtk_np.numpy_to_vtk(values))
 
         self.mapper = vtk.vtkPolyDataMapper()
         self.mapper.SetInputDataObject(self.pd)
@@ -115,7 +117,7 @@ class Ui_MainWindow(object):
 
         self.attributeLabel = QLabel('Attribute that is Visualized:')
         self.attributeDropdown = QComboBox()
-        self.attributes = ['None', 'Type of Wall', 'Completeness']
+        self.attributes = ['None', 'Type of Wall', 'Completeness', 'Wall Thickness', 'Maximum Original Height', 'Maximum Conserved Height']
         self.attributeDropdown.addItems(self.attributes)
 
         self.positionLabel = QLabel('Current (X,Y,Z) position: (0,0,0)')
@@ -146,7 +148,12 @@ class FinalProject(QMainWindow):
 
         # for use later
         self.currAttribute = 'None'
-        self.attributeDict = {'None': 'None', 'Type of Wall': 'clase_rev', 'Completeness': 'preserva_1'}
+        self.numericalDict = {'Wall Thickness': 'grosor', 'Maximum Original Height': 'alt_max', 'Maximum Conserved Height': 'alt_cons'}
+        self.categoryDict = {'None': 'None', 'Type of Wall': 'clase_rev', 'Completeness': 'preserva_1'}
+        self.categoryColors = [(235, 172, 35), (184, 0, 88), (0, 140, 249), (0, 110, 0), (0, 187, 173), (209, 99, 230), (89, 84, 214), (178, 69, 2), (255, 146, 135), (0, 198, 248), (135, 133, 0), (0, 167, 108), (189, 189, 189)]
+        self.categoryColors = [tuple(j/255 for j in i) for i in self.categoryColors]
+
+        viridis = [[0.267004, 0.004874, 0.329415], [0.282656, 0.100196, 0.42216], [0.277134, 0.185228, 0.489898], [0.253935, 0.265254, 0.529983], [0.221989, 0.339161, 0.548752], [0.190631, 0.407061, 0.556089], [0.163625, 0.471133, 0.558148], [0.139147, 0.533812, 0.555298], [0.120565, 0.596422, 0.543611], [0.134692, 0.658636, 0.517649], [0.20803, 0.718701, 0.472873], [0.327796, 0.77398, 0.40664], [0.477504, 0.821444, 0.318195], [0.647257, 0.8584, 0.209861], [0.82494, 0.88472, 0.106217], [0.993248, 0.906157, 0.143936]]
 
         self.shapefile = gpd.read_file(args.shapefile)
 
@@ -170,13 +177,12 @@ class FinalProject(QMainWindow):
         for i in mask:
             del pts[i]
             self.shapefile.drop(i, inplace=True)
-        
 
         self.shapefile['pts'] = pts
 
         self.ren = vtk.vtkRenderer()
 
-        self.allPoints = VTKActorWrapper(self.pc_array, self.colors)
+        self.allPoints = VTKActorWrapper(self.pc_array, colors=self.colors)
         self.ren.AddActor(self.allPoints.actor)
 
         # dict of lists containing the actors needed for each attribute
@@ -185,42 +191,69 @@ class FinalProject(QMainWindow):
         # create the actors for each attribute; we can then turn their visbility on and off
         for attribute in self.attributes:
             if attribute != 'None':
-                print(attribute)
-                self.masterList = categorical_arrays(self.shapefile, self.attributeDict[attribute])
-                
-                self.attributeActorDict[attribute] = []
-
-                self.legendSquare = vtk.vtkCubeSource()
-                self.legendSquare.Update()
-                self.legend = vtk.vtkLegendBoxActor()
-                self.legend.SetNumberOfEntries(len(self.masterList))
-                i = 0
-                for c, arr in self.masterList.items():
-                    r = random.random()
-                    g = random.random()
-                    b = random.random()
-                    actorTemp = VTKActorWrapper(arr)
-                    actorTemp.actor.GetProperty().SetColor(r, g, b)
+                if attribute in self.categoryDict.keys(): # is a categorical attribute
+                    self.masterList = categorical_arrays(self.shapefile, self.categoryDict[attribute])
                     
+                    self.attributeActorDict[attribute] = []
+
+                    self.legendSquare = vtk.vtkCubeSource()
+                    self.legendSquare.Update()
+                    self.legend = vtk.vtkLegendBoxActor()
+                    self.legend.SetNumberOfEntries(len(self.masterList))
+                    i = 0
+                    for c, arr in self.masterList.items():
+                        actorTemp = VTKActorWrapper(arr)
+                        actorTemp.actor.GetProperty().SetColor(self.categoryColors[i])
+                        
+                        self.ren.AddActor(actorTemp.actor)
+                        self.attributeActorDict[attribute].append(actorTemp.actor)
+
+                        self.legend.SetEntry(i, self.legendSquare.GetOutput(), c, self.categoryColors[i])
+                        i += 1
+
+                    self.legend.GetPositionCoordinate().SetCoordinateSystemToView()
+                    self.legend.GetPositionCoordinate().SetValue(0.5, -0.9)
+                    self.legend.GetPosition2Coordinate().SetCoordinateSystemToView()
+                    self.legend.GetPosition2Coordinate().SetValue(1, -0.5)
+                    self.legend.UseBackgroundOn()
+                    self.legend.SetBackgroundColor(1, 1, 1)
+
+                    self.ren.AddActor(self.legend)
+
+                    self.attributeActorDict[attribute].append(self.legend)
+
+                    for actor in self.attributeActorDict[attribute]:
+                        actor.VisibilityOff()
+                elif attribute in self.numericalDict.keys(): # is a numerical attribute
+                    self.attributeActorDict[attribute] = []
+
+                    minVal, maxVal = self.shapefile[self.numericalDict[attribute]].agg(['min', 'max'])
+
+                    values = []
+                    points = []
+
+                    for i in self.shapefile.index:
+                        for pt in self.shapefile['pts'][i]:
+                            values.append(self.shapefile['grosor'][i])
+                            points.append(pt)
+
+                    actorTemp = VTKActorWrapper(np.asarray(points), colors=None, values=np.asarray(values))
+                    ctf = vtk.vtkColorTransferFunction()
+                    for value, color in zip(np.linspace(minVal, maxVal, len(viridis)), viridis):
+                        ctf.AddRGBPoint(value, *color)
+                    actorTemp.mapper.SetLookupTable(ctf)
+
                     self.ren.AddActor(actorTemp.actor)
                     self.attributeActorDict[attribute].append(actorTemp.actor)
 
-                    self.legend.SetEntry(i, self.legendSquare.GetOutput(), c, (r, g, b))
-                    i += 1
+                    Colorbar_param = colorbar_param(title=attribute, pos=[0.9, 0.1], height=1000, width=150, nlabels=11)
+                    Colorbar = colorbar(ctf, Colorbar_param)
+                    self.ren.AddActor2D(Colorbar.get())
+                    self.attributeActorDict[attribute].append(Colorbar.get())
 
-                self.legend.GetPositionCoordinate().SetCoordinateSystemToView()
-                self.legend.GetPositionCoordinate().SetValue(0.5, -1.0)
-                self.legend.GetPosition2Coordinate().SetCoordinateSystemToView()
-                self.legend.GetPosition2Coordinate().SetValue(1, -0.5)
-                self.legend.UseBackgroundOn()
-                self.legend.SetBackgroundColor(1, 1, 1)
 
-                self.ren.AddActor(self.legend)
-
-                self.attributeActorDict[attribute].append(self.legend)
-
-                for actor in self.attributeActorDict[attribute]:
-                    actor.VisibilityOff()
+                    for actor in self.attributeActorDict[attribute]:
+                        actor.VisibilityOff()
 
         self.ui.vtkWidget.GetRenderWindow().AddRenderer(self.ren)
         self.iren = self.ui.vtkWidget.GetRenderWindow().GetInteractor()

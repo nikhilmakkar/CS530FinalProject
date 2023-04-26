@@ -3,3 +3,4 @@ testing.ipynb
 __pycache__/functions.cpython-311.pyc
 .gitignore
 functions.py
+__pycache__/vtk_colorbar.cpython-311.pyc
