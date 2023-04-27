@@ -10,6 +10,7 @@ import concurrent.futures
 import matplotlib.path as mpltPath
 from vtk_colorbar import colorbar, colorbar_param
 import pickle
+import pandas as pd
 
 
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QComboBox, QGridLayout, QLabel, QPushButton
@@ -118,7 +119,7 @@ class Ui_MainWindow(object):
 
         self.attributeLabel = QLabel('Attribute that is Visualized:')
         self.attributeDropdown = QComboBox()
-        self.attributes = ['None', 'Type of Wall', 'Completeness', 'Wall Thickness', 'Maximum Original Height', 'Maximum Conserved Height']
+        self.attributes = ['None', 'Type of Wall/Structure', 'Completeness', 'Wall Thickness', 'Maximum Original Height', 'Maximum Conserved Height', 'Time of Construction']
         self.attributeDropdown.addItems(self.attributes)
 
         self.positionLabel = QLabel('Current (X,Y,Z) position: (0,0,0)')
@@ -149,14 +150,15 @@ class FinalProject(QMainWindow):
 
         # for use later
         self.currAttribute = 'None'
-        self.numericalDict = {'Wall Thickness': 'grosor', 'Maximum Original Height': 'alt_max', 'Maximum Conserved Height': 'alt_cons'}
-        self.categoryDict = {'None': 'None', 'Type of Wall': 'clase_rev', 'Completeness': 'preserva_1'}
-        self.categoryColors = [(235, 172, 35), (184, 0, 88), (0, 140, 249), (0, 110, 0), (0, 187, 173), (209, 99, 230), (89, 84, 214), (178, 69, 2), (255, 146, 135), (0, 198, 248), (135, 133, 0), (0, 167, 108), (189, 189, 189)]
+        self.numericalDict = {'Wall Thickness': ['grosor', 'grosor_1'], 'Maximum Original Height': ['alt_max', None], 'Maximum Conserved Height': ['alt_cons', 'alt']}
+        self.categoryDict = {'None': 'None', 'Type of Wall/Structure': ['clase_rev', 'design_co1'] , 'Completeness': ['preserva_1', 'preserva_1'], 'Time of Construction': [None, 'temp_con_2']}
+        self.categoryColors = [(235, 172, 35), (184, 0, 88), (0, 140, 249), (0, 110, 0), (0, 187, 173), (209, 99, 230), (89, 84, 214), (178, 69, 2), (255, 146, 135), (0, 198, 248), (135, 133, 0), (0, 167, 108), (189, 189, 189), (251, 73, 176)]
         self.categoryColors = [tuple(j/255 for j in i) for i in self.categoryColors]
 
         viridis = [[0.267004, 0.004874, 0.329415], [0.282656, 0.100196, 0.42216], [0.277134, 0.185228, 0.489898], [0.253935, 0.265254, 0.529983], [0.221989, 0.339161, 0.548752], [0.190631, 0.407061, 0.556089], [0.163625, 0.471133, 0.558148], [0.139147, 0.533812, 0.555298], [0.120565, 0.596422, 0.543611], [0.134692, 0.658636, 0.517649], [0.20803, 0.718701, 0.472873], [0.327796, 0.77398, 0.40664], [0.477504, 0.821444, 0.318195], [0.647257, 0.8584, 0.209861], [0.82494, 0.88472, 0.106217], [0.993248, 0.906157, 0.143936]]
 
-        self.shapefile = gpd.read_file(args.shapefile)
+        self.shapefileWalls = gpd.read_file(args.walls)
+        self.shapefileStructures = gpd.read_file(args.structures)
 
         self.pc = laspy.read(args.input)
         self.pc_array = np.vstack([self.pc.x, self.pc.y, self.pc.z]).transpose()
@@ -169,20 +171,44 @@ class FinalProject(QMainWindow):
         self.nElem = self.pc_array.shape[1]
 
         # presort points into each wall component, so we do not have to do it everytime we change category
-        if args.file:
-            with open(args.file, 'rb') as fp:
-                pts = pickle.load(fp)
+        if args.wallsfile:
+            with open(args.wallsfile, 'rb') as fp:
+                ptsWalls = pickle.load(fp)
         elif args.boundaries:
-            pts = realBoundary(self.shapefile, self.pc_array)
+            ptsWalls = realBoundary(self.shapefileWalls, self.pc_array)
         else:
-            pts = boundingBox(self.shapefile, self.pc_array)
+            ptsWalls = boundingBox(self.shapefileWalls, self.pc_array)
 
-        mask = sorted((i for i, pt in enumerate(pts) if len(pt) == 0), reverse=True)
+        if args.structuresfile:
+            with open(args.structuresfile, 'rb') as fp:
+                ptsStructures = pickle.load(fp)
+        elif args.boundaries:
+            ptsStructures = realBoundary(self.shapefileStructures, self.pc_array)
+        else:
+            ptsStructures = boundingBox(self.shapefileStructures, self.pc_array)
+
+        mask = sorted((i for i, pt in enumerate(ptsWalls) if len(pt) == 0), reverse=True)
         for i in mask:
-            del pts[i]
-            self.shapefile.drop(i, inplace=True)
+            del ptsWalls[i]
+            self.shapefileWalls.drop(i, inplace=True)
 
-        self.shapefile['pts'] = pts
+        mask = sorted((i for i, pt in enumerate(ptsStructures) if len(pt) == 0), reverse=True)
+        for i in mask:
+            del ptsStructures[i]
+            self.shapefileStructures.drop(i, inplace=True)
+
+        self.shapefileWalls['pts'] = ptsWalls
+        self.shapefileStructures['pts'] = ptsStructures
+        del ptsWalls
+        del ptsStructures
+
+        # building the max height structure column
+        self.shapefileStructures['alt_muro'] = pd.to_numeric(self.shapefileStructures['alt_muro_1'], 'coerce')
+        self.shapefileStructures['alt'] = self.shapefileStructures[['alt_muro', 'altura_has', 'altura_h_1']].max(axis=1)
+
+        # change thickness from strings to numbers
+        self.shapefileStructures['grosor_1'] = pd.to_numeric(self.shapefileStructures['grosor_1'], 'coerce')
+        self.shapefileStructures.at[self.shapefileStructures[self.shapefileStructures['grosor_1'] == self.shapefileStructures['grosor_1'].max()]['grosor_1'].index[0], 'grosor_1'] /= 10 # fixing incorrectly labeled thickness
 
         self.ren = vtk.vtkRenderer()
 
@@ -196,7 +222,18 @@ class FinalProject(QMainWindow):
         for attribute in self.attributes:
             if attribute != 'None':
                 if attribute in self.categoryDict.keys(): # is a categorical attribute
-                    self.masterList = categorical_arrays(self.shapefile, self.categoryDict[attribute])
+                    if attribute == 'Type of Wall/Structure':
+                        self.masterListWalls = categorical_arrays(self.shapefileWalls, self.categoryDict[attribute][0])
+                        self.masterListStructures = categorical_arrays(self.shapefileStructures, self.categoryDict[attribute][1])
+                        self.masterList = self.masterListWalls | self.masterListStructures # merge the two together
+                    elif attribute == 'Completeness':
+                        self.masterListWalls = categorical_arrays(self.shapefileWalls, self.categoryDict[attribute][0])
+                        self.masterListStructures = categorical_arrays(self.shapefileStructures, self.categoryDict[attribute][1])
+                        self.masterList = dict()
+                        for c in self.masterListStructures.keys():
+                            self.masterList[c] = np.concatenate([self.masterListWalls[c], self.masterListStructures[c]], axis=0)
+                    elif attribute == 'Time of Construction':
+                        self.masterList = categorical_arrays(self.shapefileStructures, self.categoryDict[attribute][1])
                     
                     self.attributeActorDict[attribute] = []
 
@@ -228,18 +265,41 @@ class FinalProject(QMainWindow):
 
                     for actor in self.attributeActorDict[attribute]:
                         actor.VisibilityOff()
+
                 elif attribute in self.numericalDict.keys(): # is a numerical attribute
+                    if attribute == 'Wall Thickness' or attribute == 'Maximum Conserved Height':
+                        minValWalls, maxValWalls = self.shapefileWalls[self.numericalDict[attribute][0]].agg(['min', 'max'])
+                        print(attribute)
+                        minValStructures, maxValStructures = self.shapefileStructures[self.numericalDict[attribute][1]].agg(['min', 'max'])
+                        minVal = min(minValWalls, minValStructures)
+                        maxVal = max(maxValWalls, maxValStructures)
+                    
+                        values = []
+                        points = []
+
+                        for i in self.shapefileWalls.index:
+                            for pt in self.shapefileWalls['pts'][i]:
+                                values.append(self.shapefileWalls[self.numericalDict[attribute][0]][i])
+                                points.append(pt)
+                            print(f'{i}/{len(self.shapefileWalls.index)}')
+                        for i in self.shapefileStructures.index:
+                            for pt in self.shapefileStructures['pts'][i]:
+                                values.append(self.shapefileStructures[self.numericalDict[attribute][1]][i])
+                                points.append(pt)
+                            print(f'{i}/{len(self.shapefileStructures.index)}')
+
+                    elif attribute == 'Maximum Original Height':
+                        minVal, maxVal = self.shapefileWalls[self.numericalDict[attribute][0]].agg(['min', 'max'])
+
+                        values = []
+                        points = []
+
+                        for i in self.shapefileWalls.index:
+                            for pt in self.shapefileWalls['pts'][i]:
+                                values.append(self.shapefileWalls[self.numericalDict[attribute][0]][i])
+                                points.append(pt)
+
                     self.attributeActorDict[attribute] = []
-
-                    minVal, maxVal = self.shapefile[self.numericalDict[attribute]].agg(['min', 'max'])
-
-                    values = []
-                    points = []
-
-                    for i in self.shapefile.index:
-                        for pt in self.shapefile['pts'][i]:
-                            values.append(self.shapefile['grosor'][i])
-                            points.append(pt)
 
                     actorTemp = VTKActorWrapper(np.asarray(points), colors=None, values=np.asarray(values))
                     ctf = vtk.vtkColorTransferFunction()
@@ -289,8 +349,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='CS53000 Final Project')
     parser.add_argument('-i', '--input', required=True, type=str, help='Path of the LiDAR point cloud dataset')
-    parser.add_argument('-s', '--shapefile', required=True, type=str, help='Path of the Walls Shapefile')
-    parser.add_argument('-f', '--file', required=False, type=str, help='Path to preprocessed points pkl file')
+    parser.add_argument('-w', '--walls', required=True, type=str, help='Path of the Walls Shapefile')
+    parser.add_argument('-s', '--structures', required=True, type=str, help='Path of the Structures Shapefile')
+    parser.add_argument('--wallsfile', required=False, type=str, help='Path to preprocessed points pkl file for walls')
+    parser.add_argument('--structuresfile', required=False, type=str, help='Path to preprocessed points pkl file for structures')
     parser.add_argument('-a', '--all', action='store_true', help='Use all points instead of reducing')
     parser.add_argument('-b', '--boundaries', action='store_true', help='Use actual wall boundaries instead of bounding boxes')
 
