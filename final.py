@@ -367,13 +367,13 @@ if __name__ == '__main__':
     global args
 
     parser = argparse.ArgumentParser(description='CS53000 Final Project')
-    parser.add_argument('-i', '--input', required=True, type=str, help='Path of the LiDAR point cloud dataset')
+    parser.add_argument('-i', '--input', required=True, type=str, help='Path of the point cloud dataset')
     parser.add_argument('-w', '--walls', required=True, type=str, help='Path of the Walls Shapefile')
     parser.add_argument('-s', '--structures', required=True, type=str, help='Path of the Structures Shapefile')
-    parser.add_argument('--wallsfile', required=False, type=str, help='Path to preprocessed points pkl file for walls')
-    parser.add_argument('--structuresfile', required=False, type=str, help='Path to preprocessed points pkl file for structures')
+    parser.add_argument('--wallsfile', required=False, type=str, help='Path of the preprocessed points pkl file for walls')
+    parser.add_argument('--structuresfile', required=False, type=str, help='Path of the preprocessed points pkl file for structures')
     parser.add_argument('-a', '--all', action='store_true', help='Use all points instead of reducing')
-    parser.add_argument('-b', '--boundaries', action='store_true', help='Use actual wall boundaries instead of bounding boxes')
+    parser.add_argument('-b', '--boundaries', action='store_true', help='Calculate and use actual wall boundaries instead of bounding boxes')
 
     args = parser.parse_args()
 

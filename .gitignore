@@ -6,7 +6,5 @@ functions.py
 __pycache__/vtk_colorbar.cpython-311.pyc
 fullBoundary.pkl
 fullBoundingBox.pkl
-fullBoundaryWalls.pkl
 fullBoundingBoxStructures.pkl
 fullBoundingBoxWalls.pkl
-fullBoundaryStructures.pkl
