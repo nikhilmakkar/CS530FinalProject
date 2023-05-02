@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QComboBox, QGrid
 from PyQt6.QtCore import Qt
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
+# wrapper class for pointcloud actor
 class VTKActorWrapper(object):
     def __init__(self, nparray, colors=None, values=None):
         super(VTKActorWrapper, self).__init__()
@@ -24,11 +25,9 @@ class VTKActorWrapper(object):
         self.nparray = nparray
 
         nCoords = nparray.shape[0]
-        nElem = nparray.shape[1]
 
         self.verts = vtk.vtkPoints()
         self.cells = vtk.vtkCellArray()
-        self.scalars = None
 
         self.pd = vtk.vtkPolyData()
         self.verts.SetData(vtk_np.numpy_to_vtk(nparray))
@@ -37,9 +36,9 @@ class VTKActorWrapper(object):
         self.cells.SetCells(nCoords,vtk_np.numpy_to_vtkIdTypeArray(self.cells_npy))
         self.pd.SetPoints(self.verts)
         self.pd.SetVerts(self.cells)
-        if colors is not None:
+        if colors is not None: # sets specific colors to points if passed in
             self.pd.GetPointData().SetScalars(vtk_np.numpy_to_vtk(colors))
-        elif values is not None:
+        elif values is not None: # sets sepcific values to points if passed in
             self.pd.GetPointData().SetScalars(vtk_np.numpy_to_vtk(values))
 
         self.mapper = vtk.vtkPolyDataMapper()
@@ -53,6 +52,7 @@ class VTKActorWrapper(object):
 
 frame_counter = 0
 
+# screenshot function
 def save_frame(window):
     global frame_counter
     # ---------------------------------------------------------------
@@ -69,9 +69,11 @@ def save_frame(window):
     frame_counter += 1
     print(file_name + " has been successfully exported")
 
+# returns dictionary of (category string: list of points) key-value pairs, creating a apir for each category in shapefile['header']
 def categorical_arrays(shapefile, header):
     return shapefile.groupby(header)['pts'].agg(lambda x: np.concatenate(x.values, axis=0)).to_dict()
 
+# used by realBoundary function to find points within actual polygons in parallel
 def parallelFunction(args):
     pg, pc_array = args
     if pg.geom_type == 'Polygon':
@@ -85,11 +87,13 @@ def parallelFunction(args):
     x = pc_array[mask]
     return x
 
+# finds the points within each polygon, runs in parallel
 def realBoundary(shapefile, pc_array):
     with concurrent.futures.ProcessPoolExecutor() as executor:
         pts = [i for i in executor.map(parallelFunction, [[pg, pc_array] for pg in shapefile['geometry']])]
     return pts
 
+# finds the points within the bounding box of each polygon; faster than realBoundary, but not as accurate
 def boundingBox(shapefile, pc_array):
     pts = []
     for pg in shapefile['geometry'].apply(lambda x: x.bounds[:]):
@@ -140,113 +144,6 @@ class Ui_MainWindow(object):
         self.gridlayout.addWidget(self.quitButton, y-1, x, 1, 1)
         MainWindow.setCentralWidget(self.centralWidget)
 
-class MouseInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
-    def __init__(self, data):
-        self.AddObserver('LeftButtonPressEvent', self.left_button_press_event)
-        self.data = data
-        self.selected_mapper = vtk.vtkDataSetMapper()
-        self.selected_actor = vtk.vtkActor()
-
-        self.selected_mapper2 = vtk.vtkDataSetMapper()
-        self.selected_actor2 = vtk.vtkActor()
-        
-        self.vtk_list = vtk.vtkIdList()
-        # self.locator = vtk.vtkPointLocator()
-        self.locator = vtk.vtkStaticPointLocator()
-        self.locator.SetDataSet(self.data)
-        self.locator.BuildLocator()
-        # self.radius=0.02
-        self.radius=10
-        self.pointsize=2
-
-    def left_button_press_event(self, obj, event):
-                
-        pos = self.GetInteractor().GetEventPosition()
-
-        self.picker = vtk.vtkCellPicker()
-        self.picker.SetTolerance(0.001)
-
-        # Pick from this location.
-        self.picker.Pick(pos[0], pos[1], 0, self.GetDefaultRenderer())
-
-        self.world_position = self.picker.GetPickPosition()
-        # print(f'Cell id is: {self.picker.GetCellId()}')
-        
-        self.locator.FindPointsWithinRadius(self.radius, self.world_position, self.vtk_list)
-        # print(self.vtk_list)
-
-        if self.picker.GetCellId() != -1:
-            # print(f'Pick position is: ({self.world_position[0]:.6g}, {self.world_position[1]:.6g}, {self.world_position[2]:.6g})')
-
-            ids = vtk.vtkIdTypeArray()
-            ids.SetNumberOfComponents(1)
-            ids.InsertNextValue(self.picker.GetCellId())
-            # print(ids,'\n')
-
-            selection_node = vtk.vtkSelectionNode()
-            selection_node.SetFieldType(vtk.vtkSelectionNode.CELL)
-            selection_node.SetContentType(vtk.vtkSelectionNode.INDICES)
-            selection_node.SetSelectionList(ids)
-
-            selection = vtk.vtkSelection()
-            selection.AddNode(selection_node)
-
-            extract_selection = vtk.vtkExtractSelection()
-            extract_selection.SetInputData(0, self.data)
-            extract_selection.SetInputData(1, selection)
-            extract_selection.Update()
-
-            # In selection
-            selected = vtk.vtkUnstructuredGrid()
-            selected.ShallowCopy(extract_selection.GetOutput())
-
-            # print(f'Number of points in the selection: {selected.GetNumberOfPoints()}')
-            # print(f'Number of cells in the selection : {selected.GetNumberOfCells()}\n')
-
-            # print('########################\n') 
-
-            self.selected_mapper.SetInputData(selected)
-            self.selected_actor.SetMapper(self.selected_mapper)
-
-            # self.selected_actor.GetProperty().SetColor(self.colors.GetColor3d('Black'))
-            self.selected_actor.GetProperty().SetPointSize(self.pointsize)
-
-            self.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.selected_actor)
-            
-            
-            ids2 = vtk.vtkIdTypeArray()
-            ids2.SetNumberOfComponents(1)
-
-            for i in range(self.vtk_list.GetNumberOfIds()):
-                ids2.InsertNextValue(self.vtk_list.GetId(i))
-
-            selection_node2 = vtk.vtkSelectionNode()
-            selection_node2.SetFieldType(vtk.vtkSelectionNode.CELL)
-            selection_node2.SetContentType(vtk.vtkSelectionNode.INDICES)
-            selection_node2.SetSelectionList(ids2)
-
-            selection2 = vtk.vtkSelection()
-            selection2.AddNode(selection_node2)
-
-            extract_selection2 = vtk.vtkExtractSelection()
-            extract_selection2.SetInputData(0, self.data)
-            extract_selection2.SetInputData(1, selection2)
-            extract_selection2.Update()
-            
-    #         # In selection
-            selected2 = vtk.vtkUnstructuredGrid()
-            selected2.ShallowCopy(extract_selection2.GetOutput())
-
-            # print(f'Number of neighboring points: {selected2.GetNumberOfPoints()}')
-    #         # print(f'Number of neighboring cells: {selected2.GetNumberOfCells()}\n')
-            # print('########################\n') 
-
-            self.selected_mapper2.SetInputData(selected2)
-            self.selected_actor2.SetMapper(self.selected_mapper2)     
-            self.selected_actor2.GetProperty().SetPointSize(self.pointsize)
-            self.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer().AddActor(self.selected_actor2)
-        # Forward events
-        self.OnLeftButtonDown()
 
 class FinalProject(QMainWindow):
     def __init__(self, parent = None):
@@ -256,55 +153,66 @@ class FinalProject(QMainWindow):
 
         self.attributes = self.ui.attributes
 
-        # for use later
-        self.currAttribute = 'None'
+        # defining variables
+        self.currAttribute = 'None' # current attribute being visualized
+
+        # creates dictionaries for numerical and categorical datatypes with (category name string: [column name in walls shapefile string, column name in structures shapefile string]) key value pairs
         self.numericalDict = {'Wall Thickness': ['grosor', 'grosor_1'], 'Maximum Original Height': ['alt_max', None], 'Maximum Conserved Height': ['alt_cons', 'alt']}
         self.categoryDict = {'None': 'None', 'Type of Wall/Structure': ['clase_rev', 'design_co1'] , 'Completeness': ['preserva_1', 'preserva_1'], 'Time of Construction': [None, 'temp_con_2']}
+
+        # defines colors used to visualize categorical attributes
         self.categoryColors = [(235, 172, 35), (184, 0, 88), (0, 140, 249), (0, 110, 0), (0, 187, 173), (209, 99, 230), (89, 84, 214), (178, 69, 2), (255, 146, 135), (0, 198, 248), (135, 133, 0), (0, 167, 108), (189, 189, 189), (251, 73, 176)]
         self.categoryColors = [tuple(j/255 for j in i) for i in self.categoryColors]
 
+        # defines colors used to visualize numerical attributes
         viridis = [[0.267004, 0.004874, 0.329415], [0.282656, 0.100196, 0.42216], [0.277134, 0.185228, 0.489898], [0.253935, 0.265254, 0.529983], [0.221989, 0.339161, 0.548752], [0.190631, 0.407061, 0.556089], [0.163625, 0.471133, 0.558148], [0.139147, 0.533812, 0.555298], [0.120565, 0.596422, 0.543611], [0.134692, 0.658636, 0.517649], [0.20803, 0.718701, 0.472873], [0.327796, 0.77398, 0.40664], [0.477504, 0.821444, 0.318195], [0.647257, 0.8584, 0.209861], [0.82494, 0.88472, 0.106217], [0.993248, 0.906157, 0.143936]]
 
+        # read in the shapefiles
         self.shapefileWalls = gpd.read_file(args.walls)
         self.shapefileStructures = gpd.read_file(args.structures)
 
+        # read in pointcloud data, build pointcloud array
         self.pc = laspy.read(args.input)
         self.pc_array = np.vstack([self.pc.x, self.pc.y, self.pc.z]).transpose()
         if not args.all:
             self.pc_array = self.pc_array[::100] # Randomly reducing the points by a factor of 100
 
+        # get colors for each point
         self.colors = np.vstack([self.pc.red/2**16, self.pc.green/2**16, self.pc.blue/2**16]).transpose()
 
         self.nCoords = self.pc_array.shape[0]
         self.nElem = self.pc_array.shape[1]
 
         # presort points into each wall component, so we do not have to do it everytime we change category
-        if args.wallsfile:
+        if args.wallsfile: # read in preprocessed points
             with open(args.wallsfile, 'rb') as fp:
                 ptsWalls = pickle.load(fp)
-        elif args.boundaries:
+        elif args.boundaries: # process the points, based on either polygons or bounding boxes
             ptsWalls = realBoundary(self.shapefileWalls, self.pc_array)
         else:
             ptsWalls = boundingBox(self.shapefileWalls, self.pc_array)
 
-        if args.structuresfile:
+        if args.structuresfile: # read in preprocessed points
             with open(args.structuresfile, 'rb') as fp:
                 ptsStructures = pickle.load(fp)
-        elif args.boundaries:
+        elif args.boundaries: # process the points, based on either polygons or bounding boxes
             ptsStructures = realBoundary(self.shapefileStructures, self.pc_array)
         else:
             ptsStructures = boundingBox(self.shapefileStructures, self.pc_array)
 
+        # remove wall entries that have no points in them
         mask = sorted((i for i, pt in enumerate(ptsWalls) if len(pt) == 0), reverse=True)
         for i in mask:
             del ptsWalls[i]
             self.shapefileWalls.drop(i, inplace=True)
 
+        # remove structure entries that have no points in them
         mask = sorted((i for i, pt in enumerate(ptsStructures) if len(pt) == 0), reverse=True)
         for i in mask:
             del ptsStructures[i]
             self.shapefileStructures.drop(i, inplace=True)
 
+        # add pts columns to walls shapefile and structures shapefile
         self.shapefileWalls['pts'] = ptsWalls
         self.shapefileStructures['pts'] = ptsStructures
         del ptsWalls
@@ -314,18 +222,18 @@ class FinalProject(QMainWindow):
         self.shapefileStructures['alt_muro'] = pd.to_numeric(self.shapefileStructures['alt_muro_1'], 'coerce')
         self.shapefileStructures['alt'] = self.shapefileStructures[['alt_muro', 'altura_has', 'altura_h_1']].max(axis=1)
 
-        # change thickness from strings to numbers
+        # change thickness from strings to numbers, and removing outliers / entry errors in column
         self.shapefileStructures['grosor_1'] = pd.to_numeric(self.shapefileStructures['grosor_1'], 'coerce')
         self.shapefileStructures.at[self.shapefileStructures[self.shapefileStructures['grosor_1'] == self.shapefileStructures['grosor_1'].max()]['grosor_1'].index[0], 'grosor_1'] /= 10 # fixing incorrectly labeled thickness
+        self.shapefileStructures.at[self.shapefileStructures[self.shapefileStructures['grosor_1'] == self.shapefileStructures['grosor_1'].max()]['grosor_1'].index[0], 'grosor_1'] /= 10 # fixing incorrectly labeled thickness
+        self.shapefileStructures.at[self.shapefileStructures[self.shapefileStructures['grosor_1'] == self.shapefileStructures['grosor_1'].max()]['grosor_1'].index[0], 'grosor_1'] /= 10 # fixing incorrectly labeled thickness
+
 
         self.ren = vtk.vtkRenderer()
 
+        # create actor will all points, with natural color
         self.allPoints = VTKActorWrapper(self.pc_array, colors=self.colors)
         self.ren.AddActor(self.allPoints.actor)
-
-
-        self.style = MouseInteractorStyle(self.allPoints.pd)
-        self.style.SetDefaultRenderer(self.ren)
 
         # dict of lists containing the actors needed for each attribute
         self.attributeActorDict = dict()
@@ -333,7 +241,8 @@ class FinalProject(QMainWindow):
         # create the actors for each attribute; we can then turn their visbility on and off
         for attribute in self.attributes:
             if attribute != 'None':
-                if attribute in self.categoryDict.keys(): # is a categorical attribute
+                # is a categorical attribute; will need a legend
+                if attribute in self.categoryDict.keys():
                     if attribute == 'Type of Wall/Structure':
                         self.masterListWalls = categorical_arrays(self.shapefileWalls, self.categoryDict[attribute][0])
                         self.masterListStructures = categorical_arrays(self.shapefileStructures, self.categoryDict[attribute][1])
@@ -378,7 +287,8 @@ class FinalProject(QMainWindow):
                     for actor in self.attributeActorDict[attribute]:
                         actor.VisibilityOff()
 
-                elif attribute in self.numericalDict.keys(): # is a numerical attribute
+                # is a numerical attribute; will need a colorbar
+                elif attribute in self.numericalDict.keys():
                     if attribute == 'Wall Thickness' or attribute == 'Maximum Conserved Height':
                         minValWalls, maxValWalls = self.shapefileWalls[self.numericalDict[attribute][0]].agg(['min', 'max'])
                         minValStructures, maxValStructures = self.shapefileStructures[self.numericalDict[attribute][1]].agg(['min', 'max'])
@@ -424,9 +334,9 @@ class FinalProject(QMainWindow):
                     self.ren.AddActor2D(Colorbar.get())
                     self.attributeActorDict[attribute].append(Colorbar.get())
 
-
                     for actor in self.attributeActorDict[attribute]:
                         actor.VisibilityOff()
+
 
         self.ui.vtkWidget.GetRenderWindow().AddRenderer(self.ren)
         self.iren = self.ui.vtkWidget.GetRenderWindow().GetInteractor()
@@ -448,7 +358,7 @@ class FinalProject(QMainWindow):
         self.currAttribute = val
         self.ui.vtkWidget.GetRenderWindow().Render()
 
-# used to update current location of camera
+# used to update current location of camera on GUI
 def locationCallback(caller, ev):
     locationCallback.label.setText('Current (X,Y,Z) position:\n' + str(tuple(map(floor, locationCallback.cam.GetPosition()))))
 
@@ -473,12 +383,12 @@ if __name__ == '__main__':
     window.show()
     window.setWindowState(Qt.WindowState.WindowMaximized)  # Maximize the window
     window.iren.Initialize() # Need this line to actually show the render inside Qt
-    window.iren.SetInteractorStyle(window.style)
 
     window.ui.screenshotButton.clicked.connect(window.screenshotCallback)
     window.ui.quitButton.clicked.connect(window.quitCallback)
     window.ui.attributeDropdown.currentTextChanged.connect(window.attributeCallback)
 
+    # make camera location GUI widget change whenever camera finishes changing
     locationCallback.cam = window.ren.GetActiveCamera()
     locationCallback.label = window.ui.positionLabel
     window.iren.AddObserver('EndInteractionEvent', locationCallback)
